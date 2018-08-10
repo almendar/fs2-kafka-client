@@ -1,10 +1,10 @@
 package com.ovoenergy.fs2.kafka
 
-import cats.effect.{Async, Effect, IO, Sync}
+import cats.effect.{Async, Sync, Concurrent}
+import cats.effect.implicits._
 import cats.syntax.traverse._
-import cats.syntax.flatMap._
 import cats.syntax.functor._
-import cats.syntax.monadError._
+import cats.syntax.either._
 import com.ovoenergy.fs2.kafka.Producing._
 import fs2._
 import fs2.async.mutable.Topic
@@ -12,8 +12,6 @@ import org.apache.kafka.clients.producer._
 import org.apache.kafka.common.serialization.Serializer
 
 import scala.collection.JavaConverters._
-import scala.concurrent.ExecutionContext
-import scala.util.{Failure, Success}
 
 /**
   * The Producing side of the Kafka client.
@@ -98,10 +96,7 @@ object Producing {
         .bracket(
           initProducer[F, K, V](settings.nativeSettings,
                                 keySerializer,
-                                valueSerializer))(
-          p => Stream.emit(p).covary[F],
-          p => Sync[F].delay(p.close())
-        )
+                                valueSerializer))(p => Sync[F].delay(p.close()))
 
     }
   }
@@ -131,25 +126,21 @@ object Producing {
       val dummy: Boolean = true)
       extends AnyVal {
     def apply[K, V](producer: Producer[K, V], record: ProducerRecord[K, V])(
-        implicit F: Effect[F],
-        ec: ExecutionContext): F[F[RecordMetadata]] = {
+        implicit F: Concurrent[F]): F[F[RecordMetadata]] = {
 
-      fs2.async.promise[F, Either[Throwable, RecordMetadata]].flatMap {
-        promise =>
-          F.delay(producer.send(
-              record,
-              new Callback {
-                override def onCompletion(metadata: RecordMetadata,
-                                          exception: Exception): Unit = {
-
-                  F.runAsync(promise.complete(
-                      Option(exception).toLeft(metadata)))(_ => IO.unit)
-                    .unsafeRunSync()
-                }
-              }
-            ))
-            .as(promise.get.rethrow)
+      def send: F[RecordMetadata] = F.async { cb =>
+        producer.send(
+          record,
+          new Callback {
+            override def onCompletion(metadata: RecordMetadata,
+                                      exception: Exception): Unit =
+              cb(Option(exception).toLeft(metadata))
+          }
+        )
+        ()
       }
+
+      send.start.map(_.join)
     }
   }
 
@@ -158,33 +149,50 @@ object Producing {
       extends AnyVal {
     def apply[K, V, P](producer: Producer[K, V],
                        recordBatch: Chunk[(ProducerRecord[K, V], P)])(
-        implicit F: Async[F],
-        E: ExecutionContext): F[Chunk[(RecordMetadata, P)]] = {
-      F.flatten(F.delay {
-        recordBatch.traverse {
-          case (record, p) =>
-            val promise = scala.concurrent.Promise[(RecordMetadata, P)]()
-
-            producer.send(
-              record,
-              (metadata: RecordMetadata, exception: Exception) =>
-                Option(exception) match {
-                  case Some(e) =>
-                    promise.complete(Failure(KafkaProduceException(record, e)));
-                    ()
-                  case None => promise.complete(Success((metadata, p))); ()
-              }
-            )
-
-            F.async { cb =>
-              promise.future.onComplete {
-                case Success(result)    => cb(Right(result))
-                case Failure(exception) => cb(Left(exception))
-              }
+        implicit F: Async[F]): F[Chunk[(RecordMetadata, P)]] = {
+      def getMetadata(record: ProducerRecord[K, V],
+                      p: P): F[(RecordMetadata, P)] =
+        F.async { cb =>
+          producer.send(
+            record,
+            (metadata: RecordMetadata, exception: Exception) =>
+              Option(exception) match {
+                case Some(e) => cb(KafkaProduceException(record, e).asLeft)
+                case None    => cb((metadata, p).asRight)
             }
+          )
+          ()
         }
-      })
+
+      recordBatch.traverse { case (r, p) => getMetadata(r, p) }
     }
+    //   F.delay j
+    //   F.flatten(F.delay {
+    //     recordBatch.traverse {
+    //       // TODO change to async only
+    //       case (record, p) =>
+    //         val promise = scala.concurrent.Promise[(RecordMetadata, P)]()
+
+    //         producer.send(
+    //           record,
+    //           (metadata: RecordMetadata, exception: Exception) =>
+    //             Option(exception) match {
+    //               case Some(e) =>
+    //                 promise.complete(Failure(KafkaProduceException(record, e)));
+    //                 ()
+    //               case None => promise.complete(Success((metadata, p))); ()
+    //           }
+    //         )
+
+    //         F.async { cb =>
+    //           promise.future.onComplete {
+    //             case Success(result)    => cb(Right(result))
+    //             case Failure(exception) => cb(Left(exception))
+    //           }
+    //         }
+    //     }
+    //   })
+    // }
   }
 
   private[kafka] final class SubscribedProducePartiallyApplied[F[_]] {

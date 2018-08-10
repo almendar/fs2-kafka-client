@@ -1,6 +1,6 @@
 package com.ovoenergy.fs2.kafka
 
-import cats.effect.{Async, Effect, Sync}
+import cats.effect.{Async, Effect, Sync, Concurrent}
 import cats.syntax.all._
 import com.ovoenergy.fs2.kafka.Consuming._
 import fs2._
@@ -10,7 +10,6 @@ import org.apache.kafka.common.serialization.Deserializer
 import org.slf4j.LoggerFactory
 
 import scala.collection.JavaConverters._
-import scala.concurrent.ExecutionContext
 
 /**
   * The Consuming side of the Kafka client.
@@ -102,8 +101,7 @@ object Consuming {
                        valueDeserializer: Deserializer[V],
                        settings: ConsumerSettings)(
         processRecord: ConsumerRecord[K, V] => F[O])(
-        implicit F: Effect[F],
-        ec: ExecutionContext): Stream[F, O] = {
+        implicit F: Concurrent[F]): Stream[F, O] = {
 
       consumerStream[F](keyDeserializer, valueDeserializer, settings)
         .flatMap { consumer =>
@@ -125,8 +123,7 @@ object Consuming {
                        valueDeserializer: Deserializer[V],
                        settings: ConsumerSettings)(
         processRecordBatch: Chunk[ConsumerRecord[K, V]] => F[
-          Chunk[(O, Offset)]])(implicit F: Effect[F],
-                               ec: ExecutionContext): Stream[F, O] = {
+          Chunk[(O, Offset)]])(implicit F: Concurrent[F]): Stream[F, O] = {
 
       consumerStream[F](keyDeserializer, valueDeserializer, settings)
         .flatMap { consumer =>
@@ -148,8 +145,7 @@ object Consuming {
                        valueDeserializer: Deserializer[V],
                        settings: ConsumerSettings)(
         processRecordBatch: Pipe[F, ConsumerRecord[K, V], O])(
-        implicit F: Effect[F],
-        ec: ExecutionContext): Stream[F, BatchResults[O]] = {
+        implicit F: Concurrent[F]): Stream[F, BatchResults[O]] = {
 
       consumerStream[F](keyDeserializer, valueDeserializer, settings)
         .flatMap { consumer =>
@@ -175,9 +171,7 @@ object Consuming {
       Stream.bracket(
         initConsumer[F, K, V](settings.nativeSettings,
                               keyDeserializer,
-                              valueDeserializer))(c => Stream.emit(c).covary[F],
-                                                  c => closeConsumer(c))
-
+                              valueDeserializer))(c => closeConsumer(c))
     }
   }
 
@@ -222,12 +216,12 @@ object Consuming {
     Sync[F].delay(c.close()) >> Sync[F].delay(log.debug(s"Consumer closed"))
   }
 
-  private def processBatchChunkAndCommit[F[_]: Effect, K, V, O](
+  private def processBatchChunkAndCommit[F[_]: Concurrent, K, V, O](
       consumer: Consumer[K, V])(
       batch: ConsumerRecords[K, V],
       f: Chunk[ConsumerRecord[K, V]] => F[Chunk[(O, Offset)]],
-      parallelism: Int)(implicit ec: ExecutionContext): Stream[F, O] = {
-
+      parallelism: Int): Stream[F, O] = {
+    // TODO suspend this
     log.debug(s"Processing batchChunk $batch")
 
     val partitionStreams = batch.partitions.asScala.toSeq.map { tp =>
@@ -249,7 +243,7 @@ object Consuming {
 
     Stream
       .emits(partitionStreams)
-      .join(parallelism)
+      .parJoin(parallelism)
       .fold(BatchResults.empty[O])(_ :+ _)
       .evalMap { batchResults =>
         commit[F](consumer, batchResults.toCommit)
@@ -258,11 +252,11 @@ object Consuming {
       .flatMap(Stream.emits(_))
   }
 
-  private def processBatchWithPipeAndCommit[F[_]: Effect, K, V, O](
-      consumer: Consumer[K, V])(batch: ConsumerRecords[K, V],
-                                pipe: Pipe[F, ConsumerRecord[K, V], O],
-                                parallelism: Int)(
-      implicit ec: ExecutionContext): Stream[F, BatchResults[O]] = {
+  private def processBatchWithPipeAndCommit[F[_]: Concurrent, K, V, O](
+      consumer: Consumer[K, V])(
+      batch: ConsumerRecords[K, V],
+      pipe: Pipe[F, ConsumerRecord[K, V], O],
+      parallelism: Int): Stream[F, BatchResults[O]] = {
 
     log.debug(s"Processing batch with pipe $batch")
 
@@ -276,14 +270,14 @@ object Consuming {
         .through(pipe)
         .map(result => RecordResult(result, offsetAndMetadata))
         .fold(PartitionResults.empty[O](tp, offsetAndMetadata))(_ :+ _)
-        .observe1(pr =>
-          Effect[F].delay(log.debug(
+        .evalTap(pr =>
+          Concurrent[F].delay(log.debug(
             s"Commit offset:${pr.topicPartition.toString}:${pr.offset} - batch size:${records.size}")))
     }
 
     Stream
       .emits(partitionStreams)
-      .join(parallelism)
+      .parJoin(parallelism)
       .fold(BatchResults.empty[O])(_ :+ _)
       .evalMap { batchResults =>
         commit[F](consumer, batchResults.toCommit)
@@ -291,11 +285,10 @@ object Consuming {
       }
   }
 
-  private def processBatchAndCommit[F[_]: Effect, K, V, O](
-      consumer: Consumer[K, V])(
-      batch: ConsumerRecords[K, V],
-      f: ConsumerRecord[K, V] => F[O],
-      parallelism: Int)(implicit ec: ExecutionContext): Stream[F, O] = {
+  private def processBatchAndCommit[F[_]: Concurrent, K, V, O](
+      consumer: Consumer[K, V])(batch: ConsumerRecords[K, V],
+                                f: ConsumerRecord[K, V] => F[O],
+                                parallelism: Int): Stream[F, O] = {
 
     log.debug(s"Processing batch $batch")
 
@@ -314,7 +307,7 @@ object Consuming {
 
     Stream
       .emits(partitionStreams)
-      .join(parallelism)
+      .parJoin(parallelism)
       .fold(BatchResults.empty[O])(_ :+ _)
       .evalMap { batchResults =>
         commit[F](consumer, batchResults.toCommit)

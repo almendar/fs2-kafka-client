@@ -18,7 +18,7 @@ lazy val `fs2-kafka-client` = (project in file("."))
                     url("http://filippodeluca.com"))
         ),
         scalaVersion := "2.12.4",
-        scalafmtTestOnCompile := true,
+        scalafmtOnCompile := true,
         scalacOptions ++= Seq(
           "-target:jvm-1.8",
           "-deprecation", // Emit warning and location for usages of deprecated APIs.

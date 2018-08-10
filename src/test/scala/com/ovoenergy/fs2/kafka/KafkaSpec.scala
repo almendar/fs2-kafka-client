@@ -473,13 +473,11 @@ class KafkaSpec extends BaseUnitSpec with EmbeddedKafka {
           .flatMap { producer =>
             Stream
               .iterate(0)(_ + 1)
-              .segmentN(100)
-              .flatMap(Stream.segment)
-              .evalMap[IO, IO[RecordMetadata]] { i =>
+              .chunkN(100)
+              .flatMap(Stream.chunk)
+              .evalMap { i =>
                 val record =
-                  new ProducerRecord[String, String](destinationTopic,
-                                                     s"key-$i",
-                                                     s"value-$i")
+                  new ProducerRecord(destinationTopic, s"key-$i", s"value-$i")
                 produceRecordWithBatching[IO].apply(producer, record)
               }
               // The buffer allow to put 1000 elements in the batch before waiting for the callback
