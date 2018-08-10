@@ -1,6 +1,6 @@
 package com.ovoenergy.fs2.kafka
 
-import cats.effect.{Effect, Sync, Concurrent}
+import cats.effect.{Sync, Concurrent}
 import fs2._
 import org.apache.kafka.clients.consumer._
 import org.apache.kafka.common.serialization.Deserializer
@@ -76,7 +76,7 @@ object ConsumerSyntax {
                     keyDeserializer: Deserializer[K],
                     valueDeserializer: Deserializer[V],
                     settings: ConsumerSettings)(
-        implicit F: Effect[F]): Stream[F, ConsumerRecord[K, V]] =
+        implicit F: Sync[F]): Stream[F, ConsumerRecord[K, V]] =
       consuming.consume[F, K, V](subscription,
                                  keyDeserializer,
                                  valueDeserializer,

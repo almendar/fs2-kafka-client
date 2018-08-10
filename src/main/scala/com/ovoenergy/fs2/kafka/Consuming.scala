@@ -1,6 +1,6 @@
 package com.ovoenergy.fs2.kafka
 
-import cats.effect.{Async, Effect, Sync, Concurrent}
+import cats.effect.{Async, Sync, Concurrent}
 import cats.syntax.all._
 
 import fs2._
@@ -23,7 +23,7 @@ object consuming {
                           keyDeserializer: Deserializer[K],
                           valueDeserializer: Deserializer[V],
                           settings: ConsumerSettings)(
-      implicit F: Effect[F]): Stream[F, ConsumerRecord[K, V]] =
+      implicit F: Sync[F]): Stream[F, ConsumerRecord[K, V]] =
     consumerStream[F, K, V](keyDeserializer, valueDeserializer, settings)
       .flatMap { consumer =>
         batchStream(consumer, subscription, settings)
