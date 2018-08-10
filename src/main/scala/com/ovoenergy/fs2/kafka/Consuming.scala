@@ -2,7 +2,7 @@ package com.ovoenergy.fs2.kafka
 
 import cats.effect.{Async, Effect, Sync, Concurrent}
 import cats.syntax.all._
-import com.ovoenergy.fs2.kafka.Consuming._
+
 import fs2._
 import org.apache.kafka.clients.consumer._
 import org.apache.kafka.common.TopicPartition
@@ -14,12 +14,23 @@ import scala.collection.JavaConverters._
 /**
   * The Consuming side of the Kafka client.
   */
-trait Consuming {
+object consuming {
 
   /**
     * Consume records from the given subscription and provides a `Stream[F, ConsumerRecord[K, V]]`.
     */
-  def consume[F[_]]: ConsumePartiallyApplied[F] = new ConsumePartiallyApplied[F]
+  def consume[F[_], K, V](subscription: Subscription,
+                          keyDeserializer: Deserializer[K],
+                          valueDeserializer: Deserializer[V],
+                          settings: ConsumerSettings)(
+      implicit F: Effect[F]): Stream[F, ConsumerRecord[K, V]] =
+    consumerStream[F, K, V](keyDeserializer, valueDeserializer, settings)
+      .flatMap { consumer =>
+        batchStream(consumer, subscription, settings)
+          .flatMap { batch =>
+            Stream.emits(batch.asScala.toVector)
+          }
+      }
 
   /**
     * Consume records from the given subscription, and apply the provided function on each record,
@@ -30,9 +41,21 @@ trait Consuming {
     * The result of the processing is a `Stream[F, O]` where `O` is the
     * return type of the provided function.
     */
-  def consumeProcessAndCommit[F[_]]
-    : ConsumeProcessAndCommitPartiallyApplied[F] =
-    new ConsumeProcessAndCommitPartiallyApplied[F]
+  def consumeProcessAndCommit[F[_], K, V, O](
+      subscription: Subscription,
+      keyDeserializer: Deserializer[K],
+      valueDeserializer: Deserializer[V],
+      settings: ConsumerSettings)(processRecord: ConsumerRecord[K, V] => F[O])(
+      implicit F: Concurrent[F]): Stream[F, O] =
+    consumerStream[F, K, V](keyDeserializer, valueDeserializer, settings)
+      .flatMap { consumer =>
+        batchStream(consumer, subscription, settings)
+          .flatMap { batch =>
+            processBatchAndCommit(consumer)(batch,
+                                            processRecord,
+                                            settings.maxParallelism)
+          }
+      }
 
   /**
     * Consume records from the given subscription, and apply the provided function on each batch
@@ -43,9 +66,22 @@ trait Consuming {
     * The result of the processing is a `Stream[F, O]` where `O` is the
     * return type of the provided function.
     */
-  def consumeProcessBatchAndCommit[F[_]]
-    : ConsumeProcessBatchAndCommitPartiallyApplied[F] =
-    new ConsumeProcessBatchAndCommitPartiallyApplied[F]
+  def consumeProcessBatchAndCommit[F[_], K, V, O](
+      subscription: Subscription,
+      keyDeserializer: Deserializer[K],
+      valueDeserializer: Deserializer[V],
+      settings: ConsumerSettings)(
+      processRecordBatch: Chunk[ConsumerRecord[K, V]] => F[Chunk[(O, Offset)]])(
+      implicit F: Concurrent[F]): Stream[F, O] =
+    consumerStream[F, K, V](keyDeserializer, valueDeserializer, settings)
+      .flatMap { consumer =>
+        batchStream(consumer, subscription, settings)
+          .flatMap { batch =>
+            processBatchChunkAndCommit(consumer)(batch,
+                                                 processRecordBatch,
+                                                 settings.maxParallelism)
+          }
+      }
 
   /**
     * Consume records from the given subscription, and apply the provided `Pipe[F[_], ConsumerRecord[K, V], O]` function on each batch
@@ -58,122 +94,36 @@ trait Consuming {
     *
     * The result of the processing is a `Stream[F, BatchResults[O]]`.
     */
-  def consumeProcessBatchWithPipeAndCommit[F[_]]
-    : ConsumeProcessBatchWithPipeAndCommitPartiallyApplied[F] =
-    new ConsumeProcessBatchWithPipeAndCommitPartiallyApplied[F]
+  def consumeProcessBatchWithPipeAndCommit[F[_], K, V, O](
+      subscription: Subscription,
+      keyDeserializer: Deserializer[K],
+      valueDeserializer: Deserializer[V],
+      settings: ConsumerSettings)(
+      processRecordBatch: Pipe[F, ConsumerRecord[K, V], O])(
+      implicit F: Concurrent[F]): Stream[F, BatchResults[O]] =
+    consumerStream[F, K, V](keyDeserializer, valueDeserializer, settings)
+      .flatMap { consumer =>
+        batchStream(consumer, subscription, settings)
+          .flatMap { batch =>
+            processBatchWithPipeAndCommit(consumer)(batch,
+                                                    processRecordBatch,
+                                                    settings.maxParallelism)
+          }
+      }
 
   /**
     * Provides a `Stream[F, Consumer[K,V]]` that will automatically close the consumer when completed.
     */
-  def consumerStream[F[_]]: ConsumerStreamPartiallyApplied[F] =
-    new ConsumerStreamPartiallyApplied[F]
+  def consumerStream[F[_], K, V](keyDeserializer: Deserializer[K],
+                                 valueDeserializer: Deserializer[V],
+                                 settings: ConsumerSettings)(
+      implicit F: Sync[F]): Stream[F, Consumer[K, V]] =
+    Stream.bracket(
+      initConsumer[F, K, V](settings.nativeSettings,
+                            keyDeserializer,
+                            valueDeserializer))(c => closeConsumer(c))
 
-}
-
-object Consuming {
-
-  private val log = LoggerFactory.getLogger(classOf[Consuming])
-
-  private[kafka] final class ConsumePartiallyApplied[F[_]](
-      val dummy: Boolean = true)
-      extends AnyVal {
-    def apply[K, V](subscription: Subscription,
-                    keyDeserializer: Deserializer[K],
-                    valueDeserializer: Deserializer[V],
-                    settings: ConsumerSettings)(
-        implicit F: Effect[F]): Stream[F, ConsumerRecord[K, V]] = {
-
-      consumerStream[F](keyDeserializer, valueDeserializer, settings)
-        .flatMap { consumer =>
-          batchStream(consumer, subscription, settings)
-            .flatMap { batch =>
-              Stream.emits(batch.asScala.toVector)
-            }
-        }
-    }
-  }
-
-  private[kafka] final class ConsumeProcessAndCommitPartiallyApplied[F[_]](
-      val dummy: Boolean = true)
-      extends AnyVal {
-    def apply[K, V, O](subscription: Subscription,
-                       keyDeserializer: Deserializer[K],
-                       valueDeserializer: Deserializer[V],
-                       settings: ConsumerSettings)(
-        processRecord: ConsumerRecord[K, V] => F[O])(
-        implicit F: Concurrent[F]): Stream[F, O] = {
-
-      consumerStream[F](keyDeserializer, valueDeserializer, settings)
-        .flatMap { consumer =>
-          batchStream(consumer, subscription, settings)
-            .flatMap { batch =>
-              processBatchAndCommit(consumer)(batch,
-                                              processRecord,
-                                              settings.maxParallelism)
-            }
-        }
-    }
-  }
-
-  private[kafka] final class ConsumeProcessBatchAndCommitPartiallyApplied[F[_]](
-      val dummy: Boolean = true)
-      extends AnyVal {
-    def apply[K, V, O](subscription: Subscription,
-                       keyDeserializer: Deserializer[K],
-                       valueDeserializer: Deserializer[V],
-                       settings: ConsumerSettings)(
-        processRecordBatch: Chunk[ConsumerRecord[K, V]] => F[
-          Chunk[(O, Offset)]])(implicit F: Concurrent[F]): Stream[F, O] = {
-
-      consumerStream[F](keyDeserializer, valueDeserializer, settings)
-        .flatMap { consumer =>
-          batchStream(consumer, subscription, settings)
-            .flatMap { batch =>
-              processBatchChunkAndCommit(consumer)(batch,
-                                                   processRecordBatch,
-                                                   settings.maxParallelism)
-            }
-        }
-    }
-  }
-
-  private[kafka] final class ConsumeProcessBatchWithPipeAndCommitPartiallyApplied[
-      F[_]](val dummy: Boolean = true)
-      extends AnyVal {
-    def apply[K, V, O](subscription: Subscription,
-                       keyDeserializer: Deserializer[K],
-                       valueDeserializer: Deserializer[V],
-                       settings: ConsumerSettings)(
-        processRecordBatch: Pipe[F, ConsumerRecord[K, V], O])(
-        implicit F: Concurrent[F]): Stream[F, BatchResults[O]] = {
-
-      consumerStream[F](keyDeserializer, valueDeserializer, settings)
-        .flatMap { consumer =>
-          batchStream(consumer, subscription, settings)
-            .flatMap { batch =>
-              processBatchWithPipeAndCommit(consumer)(batch,
-                                                      processRecordBatch,
-                                                      settings.maxParallelism)
-            }
-        }
-    }
-  }
-
-  private[kafka] final class ConsumerStreamPartiallyApplied[F[_]](
-      val dummy: Boolean = true)
-      extends AnyVal {
-
-    def apply[K, V](keyDeserializer: Deserializer[K],
-                    valueDeserializer: Deserializer[V],
-                    settings: ConsumerSettings)(
-        implicit F: Sync[F]): Stream[F, Consumer[K, V]] = {
-
-      Stream.bracket(
-        initConsumer[F, K, V](settings.nativeSettings,
-                              keyDeserializer,
-                              valueDeserializer))(c => closeConsumer(c))
-    }
-  }
+  private val log = LoggerFactory.getLogger("Consuming")
 
   private def batchStream[F[_]: Sync, K, V](
       consumer: Consumer[K, V],
