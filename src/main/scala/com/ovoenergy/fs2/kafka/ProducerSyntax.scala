@@ -1,7 +1,7 @@
 package com.ovoenergy.fs2.kafka
 
 import cats.effect.{Async, Sync, Concurrent}
-import fs2._, async.mutable.Topic
+import fs2._, concurrent.Topic
 import org.apache.kafka.clients.producer._
 import org.apache.kafka.common.serialization.Serializer
 
