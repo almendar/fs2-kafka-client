@@ -20,10 +20,11 @@ import org.apache.kafka.common.TopicPartition
 import org.apache.kafka.common.serialization._
 
 import scala.concurrent.duration._
-import scala.concurrent.ExecutionContext.Implicits.global
 import scala.collection.JavaConverters._
 
 class KafkaSpec extends BaseUnitSpec with EmbeddedKafka {
+
+  implicit val ec = cats.effect.internals.IOContextShift.global
 
   implicit val stringSerializer: Serializer[String] = new StringSerializer
   implicit val stringDeserializer: Deserializer[String] = new StringDeserializer
@@ -360,7 +361,6 @@ class KafkaSpec extends BaseUnitSpec with EmbeddedKafka {
 
     "throw exception when failing to communicate with kafka" in {
       import cats.syntax.all._
-      import scala.concurrent.ExecutionContext.Implicits.global
 
       val producer = new MockProducer[String, String](false,
                                                       new StringSerializer,
@@ -504,7 +504,7 @@ class KafkaSpec extends BaseUnitSpec with EmbeddedKafka {
   "subscrubedProduce" should {
     "produce transformed messages upon events in fs2.Topic" in {
 
-      val topic = fs2.async.topic[IO, Int](0).unsafeRunSync()
+      val topic = fs2.concurrent.Topic[IO, Int](0).unsafeRunSync()
 
       val publisherStream = fs2.Stream.eval(topic.publish1(1))
 

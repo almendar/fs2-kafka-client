@@ -5,7 +5,7 @@ import cats.effect.implicits._
 import cats.syntax.traverse._
 import cats.syntax.functor._
 import cats.syntax.either._
-import fs2._, async.mutable.Topic
+import fs2._, concurrent.Topic
 import org.apache.kafka.clients.producer._
 import org.apache.kafka.common.serialization.Serializer
 
