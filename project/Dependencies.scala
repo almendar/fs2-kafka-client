@@ -5,7 +5,7 @@ object Dependencies {
   lazy val scalaTest = "org.scalatest" %% "scalatest" % "3.0.4"
 
   object fs2 {
-    private val version = "1.0.0-M5"
+    private val version = "1.0.0-RC2"
 
     lazy val core = "co.fs2" %% "fs2-core" % version
     lazy val io = "co.fs2" %% "fs2-io" % version
