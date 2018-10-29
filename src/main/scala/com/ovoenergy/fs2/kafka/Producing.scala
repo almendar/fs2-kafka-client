@@ -121,14 +121,16 @@ object Producing {
       extends AnyVal {
     def apply[K, V](producer: Producer[K, V], record: ProducerRecord[K, V])(
         implicit F: Async[F]): F[RecordMetadata] = {
-
       F.async[RecordMetadata] { cb =>
         producer.send(
           record,
-          (metadata: RecordMetadata, exception: Exception) =>
-            Option(exception) match {
-              case Some(e) => cb(Left(KafkaProduceException(record, e)))
-              case None => cb(Right(metadata))
+          new Callback {
+            override def onCompletion(metadata: RecordMetadata, exception: Exception): Unit = {
+              Option(exception) match {
+                case Some(e) => cb(Left(KafkaProduceException(record, e)))
+                case None => cb(Right(metadata))
+              }
+            }
           }
         )
 
@@ -172,12 +174,16 @@ object Producing {
 
             producer.send(
               record,
-              (metadata: RecordMetadata, exception: Exception) =>
-                Option(exception) match {
-                  case Some(e) =>
-                    promise.complete(Failure(KafkaProduceException(record, e)));
-                    ()
-                  case None => promise.complete(Success((metadata, p))); ()
+              new Callback {
+                override def onCompletion(metadata: RecordMetadata, exception: Exception): Unit = {
+                  Option(exception) match {
+                    case Some(e) =>
+                      promise.complete(Failure(KafkaProduceException(record, e)));
+                      ()
+                    case None => promise.complete(Success((metadata, p))); ()
+
+                  }
+                }
               }
             )
 

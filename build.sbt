@@ -23,7 +23,6 @@ lazy val `fs2-kafka-client` = (project in file("."))
       "-Xfuture", // Turn on future language features.
       "-Xlint:adapted-args", // Warn if an argument list is modified to match the receiver.
       "-Xlint:by-name-right-associative", // By-name parameter of right associative operator.
-      "-Xlint:constant", // Evaluation of a constant arithmetic expression results in an error.
       "-Xlint:delayedinit-select", // Selecting member of DelayedInit.
       "-Xlint:doc-detached", // A Scaladoc comment appears to be detached from its element.
       "-Xlint:inaccessible", // Warn about inaccessible types in method signatures.
@@ -41,22 +40,30 @@ lazy val `fs2-kafka-client` = (project in file("."))
       "-Yno-adapted-args", // Do not adapt an argument list (either by inserting () or creating a tuple) to match the receiver.
       "-Ypartial-unification", // Enable partial unification in type constructor inference
       "-Ywarn-dead-code", // Warn when dead code is identified.
-      "-Ywarn-extra-implicit", // Warn when more than one implicit parameter section is defined.
       "-Ywarn-inaccessible", // Warn about inaccessible types in method signatures.
       "-Ywarn-infer-any", // Warn when a type argument is inferred to be `Any`.
       "-Ywarn-nullary-override", // Warn when non-nullary `def f()' overrides nullary `def f'.
       "-Ywarn-nullary-unit", // Warn when nullary methods return Unit.
       "-Ywarn-numeric-widen", // Warn when numerics are widened.
-      "-Ywarn-unused:implicits", // Warn if an implicit parameter is unused.
-      "-Ywarn-unused:imports", // Warn if an import selector is not referenced.
-      "-Ywarn-unused:locals", // Warn if a local definition is unused.
-      "-Ywarn-unused:params", // Warn if a value parameter is unused.
-      "-Ywarn-unused:patvars", // Warn if a variable bound in a pattern is unused.
-      "-Ywarn-unused:privates", // Warn if a private member is unused.
       "-Ywarn-value-discard" // Warn when non-Unit expression results are unused.
     ),
+    scalacOptions ++= {
+        CrossVersion.partialVersion(scalaVersion.value) match {
+          case Some((2, major)) if major >= 12 =>
+            Seq(
+              "-Ywarn-extra-implicit", // Warn when more than one implicit parameter section is defined.
+              "-Ywarn-unused:implicits", // Warn if an implicit parameter is unused.
+              "-Xlint:constant", // Evaluation of a constant arithmetic expression results in an error.
+              "-Ywarn-unused:imports", // Warn if an import selector is not referenced.
+              "-Ywarn-unused:params", // Warn if a value parameter is unused.
+              "-Ywarn-unused:patvars", // Warn if a variable bound in a pattern is unused.
+              "-Ywarn-unused:privates", // Warn if a private member is unused.
+              "-Ywarn-unused:locals" // Warn if a local definition is unused.
+            )
+          case _ => Seq.empty
+        }
+    },
     scalacOptions in Tut --= Seq("-Ywarn-unused:imports", "-Yno-imports", "-Ywarn-unused:params"),
-    inThisBuild(
       List(
         homepage := Some(url("https://github.com/ovotech/fs2-kafka-client")),
         organization := "com.ovoenergy",
@@ -67,6 +74,7 @@ lazy val `fs2-kafka-client` = (project in file("."))
                     "filippo.deluca@ovoenergy.com",
                     url("http://filippodeluca.com"))
         ),
+        crossScalaVersions := Seq("2.12.6", "2.11.12"),
         scalaVersion := "2.12.6",
         scalafmtOnCompile := true,
         testOptions in Test += Tests.Argument("-oF"),
@@ -86,7 +94,7 @@ lazy val `fs2-kafka-client` = (project in file("."))
         ),
         version ~= (_.replace('+', '-')),
         dynver ~= (_.replace('+', '-'))
-      )),
+      ),
     name := "fs2-kafka-client",
     description := "A tiny fs2 wrapper around the Kafka java client",
     libraryDependencies ++= Seq(
